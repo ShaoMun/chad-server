@@ -8,11 +8,16 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
+app.use(express.json()); // Add this to prevent request body issues
+app.use(express.urlencoded({ extended: true }));
+
+const PORT = process.env.PORT || 3001;
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: FRONTEND_URL,
     methods: ["GET", "POST"]
   }
 });
@@ -28,7 +33,6 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   socket.on('joinMatchmaking', () => {
-    // Matchmaking logic
     let foundMatch = false;
     for (const [roomId, room] of gameRooms.entries()) {
       if (room.players.length === 1) {
@@ -36,7 +40,6 @@ io.on('connection', (socket) => {
         socket.join(roomId);
         foundMatch = true;
         
-        // Notify both players that match is ready
         io.to(roomId).emit('matchFound', {
           matchId: roomId,
           player1: room.players[0],
@@ -56,7 +59,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('playerStateUpdate', ({ matchId, state, isPlayer1 }) => {
+  socket.on('playerStateUpdate', ({ matchId, state }) => {
     socket.to(matchId).emit('opponentStateUpdate', state);
   });
 
@@ -70,17 +73,21 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-    // Clean up game rooms
+
     for (const [roomId, room] of gameRooms.entries()) {
       if (room.players.includes(socket.id)) {
-        io.to(roomId).emit('opponentDisconnected');
-        gameRooms.delete(roomId);
+        room.players = room.players.filter(player => player !== socket.id);
+
+        if (room.players.length === 0) {
+          gameRooms.delete(roomId);
+        } else {
+          io.to(roomId).emit('opponentDisconnected');
+        }
       }
     }
   });
 });
 
-const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-}); 
+});

@@ -7,87 +7,205 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-app.use(cors());
-app.use(express.json()); // Add this to prevent request body issues
+app.use(cors({
+  origin: ['https://chad-jade.vercel.app', 'http://localhost:3000'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3001;
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://chad-jade.vercel.app';
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: FRONTEND_URL,
-    methods: ["GET", "POST"]
+    origin: ['https://chad-jade.vercel.app', 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
-interface GameRoom {
-  players: string[];
-  gameState: any;
+// Add a simple health check endpoint
+app.get('/', (req, res) => {
+  res.send('Socket server is running');
+});
+
+interface PlayerState {
+  position: { x: number; y: number };
+  health: number;
+  animation: string;
+  facing: number;  // 1 for right, -1 for left
 }
 
-const gameRooms = new Map<string, GameRoom>();
+interface Match {
+  players: string[];
+  player1Character: string | null;
+  player2Character: string | null;
+  player1State?: PlayerState;
+  player2State?: PlayerState;
+}
+
+const waitingPlayers = new Set<string>();
+const matches = new Map<string, Match>();
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('Client connected:', socket.id);
 
-  socket.on('joinMatchmaking', () => {
-    let foundMatch = false;
-    for (const [roomId, room] of gameRooms.entries()) {
-      if (room.players.length === 1) {
-        room.players.push(socket.id);
-        socket.join(roomId);
-        foundMatch = true;
-        
-        io.to(roomId).emit('matchFound', {
-          matchId: roomId,
-          player1: room.players[0],
-          player2: room.players[1]
-        });
-        break;
-      }
-    }
+  socket.on('findMatch', () => {
+    console.log('Find match request from:', socket.id);
+    
+    if (waitingPlayers.size > 0) {
+      const player1 = [...waitingPlayers][0];
+      waitingPlayers.delete(player1);
+      const player2 = socket.id;
+      
+      const matchId = `${player1}-${player2}`;
+      console.log('Created match:', matchId, { player1, player2 });
 
-    if (!foundMatch) {
-      const roomId = Math.random().toString(36).substring(7);
-      gameRooms.set(roomId, {
-        players: [socket.id],
-        gameState: {}
+      matches.set(matchId, {
+        players: [player1, player2],
+        player1Character: null,
+        player2Character: null
       });
-      socket.join(roomId);
+
+      // Notify both players
+      io.to(player1).emit('matchFound', { matchId, isPlayer1: true });
+      io.to(player2).emit('matchFound', { matchId, isPlayer1: false });
+    } else {
+      waitingPlayers.add(socket.id);
     }
   });
 
-  socket.on('playerStateUpdate', ({ matchId, state }) => {
-    socket.to(matchId).emit('opponentStateUpdate', state);
+  socket.on('characterSelected', ({ matchId, character, isPlayer1 }) => {
+    console.log('Character selected:', { matchId, character, isPlayer1, socketId: socket.id });
+    
+    const foundMatch = matches.get(matchId);
+
+    if (!foundMatch) {
+      console.error('No match found for matchId:', matchId);
+      return;
+    }
+
+    // Use the isPlayer1 flag to determine which character to set
+    if (isPlayer1) {
+      foundMatch.player1Character = character;
+    } else {
+      foundMatch.player2Character = character;
+    }
+
+    console.log('Updated match state:', {
+      matchId,
+      players: foundMatch.players,
+      player1Char: foundMatch.player1Character,
+      player2Char: foundMatch.player2Character
+    });
+
+    // Notify both players of the selection
+    foundMatch.players.forEach(pid => {
+      io.to(pid).emit('characterUpdate', {
+        player1Character: foundMatch.player1Character,
+        player2Character: foundMatch.player2Character
+      });
+    });
+
+    // If both players have selected, start the fight
+    if (foundMatch.player1Character && foundMatch.player2Character) {
+      foundMatch.players.forEach(pid => {
+        io.to(pid).emit('startFight', {
+          player1Character: foundMatch.player1Character,
+          player2Character: foundMatch.player2Character
+        });
+      });
+    }
+  });
+
+  socket.on('playerStateUpdate', ({ matchId, state, isPlayer1 }) => {
+    const match = matches.get(matchId);
+    if (!match) return;
+
+    // Update the player state
+    if (isPlayer1) {
+      match.player1State = state;
+    } else {
+      match.player2State = state;
+    }
+
+    // Broadcast the state to the opponent
+    const opponent = match.players.find(id => id !== socket.id);
+    if (opponent) {
+      io.to(opponent).emit('opponentStateUpdate', state);
+    }
   });
 
   socket.on('playerHit', ({ matchId, damage, isPlayer1, attackerX }) => {
-    socket.to(matchId).emit('playerHit', { damage, isPlayer1, attackerX });
+    const match = matches.get(matchId);
+    if (!match) return;
+
+    // Broadcast the hit to both players
+    match.players.forEach(pid => {
+      io.to(pid).emit('playerHit', { 
+        damage, 
+        isPlayer1,
+        attackerX 
+      });
+    });
+
+    // Update the state in the match
+    if (isPlayer1 && match.player1State) {
+      match.player1State.health = Math.max(0, (match.player1State.health || 100) - damage);
+    } else if (!isPlayer1 && match.player2State) {
+      match.player2State.health = Math.max(0, (match.player2State.health || 100) - damage);
+    }
   });
 
-  socket.on('playerAction', ({ matchId, action, position }) => {
-    socket.to(matchId).emit('opponentAction', { action, position });
+  socket.on('healthUpdate', ({ matchId, health, isPlayer1, position }) => {
+    const match = matches.get(matchId);
+    if (!match) return;
+
+    // Update the player state
+    if (isPlayer1) {
+      match.player1State = {
+        ...match.player1State,
+        health,
+        position,
+        animation: match.player1State?.animation || '',
+        facing: match.player1State?.facing || 1
+      };
+    } else {
+      match.player2State = {
+        ...match.player2State,
+        health,
+        position,
+        animation: match.player2State?.animation || '',
+        facing: match.player2State?.facing || 1
+      };
+    }
+
+    // Broadcast the health update to both players
+    match.players.forEach(pid => {
+      io.to(pid).emit('healthUpdate', { health, isPlayer1, position });
+    });
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-
-    for (const [roomId, room] of gameRooms.entries()) {
-      if (room.players.includes(socket.id)) {
-        room.players = room.players.filter(player => player !== socket.id);
-
-        if (room.players.length === 0) {
-          gameRooms.delete(roomId);
-        } else {
-          io.to(roomId).emit('opponentDisconnected');
+    console.log('Client disconnected:', socket.id);
+    waitingPlayers.delete(socket.id);
+    
+    // Clean up matches
+    for (const [matchId, match] of matches.entries()) {
+      if (match.players.includes(socket.id)) {
+        const opponent = match.players.find(id => id !== socket.id);
+        if (opponent) {
+          io.to(opponent).emit('opponentDisconnected');
         }
+        matches.delete(matchId);
       }
     }
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Socket server running on port ${PORT}`);
 });

@@ -8,7 +8,7 @@ dotenv.config();
 
 const app = express();
 app.use(cors({
-  origin: ['https://chad-jade.vercel.app', 'http://localhost:3000'],
+  origin: ['https://the-unchained.xyz', "https://www.the-unchained.xyz",'http://localhost:3000'],
   methods: ['GET', 'POST'],
   credentials: true
 }));
@@ -21,7 +21,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://chad-jade.vercel.app';
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: ['https://chad-jade.vercel.app', 'http://localhost:3000'],
+    origin: ['https://the-unchained.xyz', 'http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true
   }

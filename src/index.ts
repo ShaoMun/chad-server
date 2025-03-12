@@ -21,7 +21,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://the-unchained.xyz';
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: ['https://the-unchained.xyz', 'http://localhost:3000'],
+    origin: ['https://the-unchained.xyz', "https://www.the-unchained.xyz",'http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true
   }

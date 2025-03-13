@@ -56,10 +56,20 @@ io.on('connection', (socket) => {
   socket.on('findMatch', () => {
     console.log('Find match request from:', socket.id);
     
+    // Remove this socket from waiting players if it was already there
+    waitingPlayers.delete(socket.id);
+    
     if (waitingPlayers.size > 0) {
       const player1 = [...waitingPlayers][0];
       waitingPlayers.delete(player1);
       const player2 = socket.id;
+      
+      // Ensure we're not matching a player with themselves
+      if (player1 === player2) {
+        console.log('Prevented self-matching for player:', player1);
+        waitingPlayers.add(socket.id);
+        return;
+      }
       
       const matchId = `${player1}-${player2}`;
       console.log('Created match:', matchId, { player1, player2 });
